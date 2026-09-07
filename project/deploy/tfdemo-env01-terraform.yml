@@ -1,0 +1,31 @@
+name: 'Terraform - deploy Service Bus to env01'
+
+trigger: none # manual/triggered runs only; flip this on if you want CI on push
+
+variables:
+  - group: Terraform_SPN
+  - name: rootFolder
+    value: 'terraform/'
+  - name: tfvarsFile
+    value: 'tfdemo.env01.tfvars'
+  - name: adoEnvironment
+    value: 'env01'
+  - name: backendResourceGroup
+    value: 'tfstate-tfdemo-rg'
+  - name: backendStorageAccount
+    value: 'tfstatetfdemostg'
+  - name: backendContainer
+    value: 'tfstate'
+  - name: backendKey
+    value: 'tfdemo.env01.tfstate'
+
+stages:
+- template: templates/terraform-template.yml
+  parameters:
+    rootFolder: $(rootFolder)
+    tfvarsFile: $(tfvarsFile)
+    adoEnvironment: $(adoEnvironment)
+    backendResourceGroup: $(backendResourceGroup)
+    backendStorageAccount: $(backendStorageAccount)
+    backendContainer: $(backendContainer)
+    backendKey: $(backendKey)

@@ -1,0 +1,51 @@
+# Root-level entry point for Azure DevOps (this is the filename ADO looks
+# for by default when you create a new pipeline and point it at this repo).
+#
+# It deploys the "env01" Service Bus environment by calling the shared
+# terraform-template.yml. To add another environment (env02, prod, etc.),
+# copy this file (or deploy/tfdemo-env01-terraform.yml) and only change the
+# `variables` block below - no Terraform code changes required.
+
+name: 'Terraform - deploy Service Bus ($(adoEnvironment))'
+
+trigger: none
+# To enable CI on merges to main, uncomment:
+# trigger:
+#   branches:
+#     include:
+#       - main
+#   paths:
+#     include:
+#       - terraform/*
+#       - deploy/*
+
+pr: none
+
+variables:
+  - group: Terraform_SPN        # provides ARM_CLIENT_ID, ARM_CLIENT_SECRET,
+                                 # ARM_SUBSCRIPTION_ID, ARM_TENANT_ID
+  - name: rootFolder
+    value: 'terraform/'
+  - name: tfvarsFile
+    value: 'tfdemo.env01.tfvars'
+  - name: adoEnvironment
+    value: 'env01'
+  - name: backendResourceGroup
+    value: 'tfstate-tfdemo-rg'
+  - name: backendStorageAccount
+    value: 'tfstatetfdemostg'
+  - name: backendContainer
+    value: 'tfstate'
+  - name: backendKey
+    value: 'tfdemo.env01.tfstate'
+
+stages:
+- template: deploy/templates/terraform-template.yml
+  parameters:
+    rootFolder: $(rootFolder)
+    tfvarsFile: $(tfvarsFile)
+    adoEnvironment: $(adoEnvironment)
+    backendResourceGroup: $(backendResourceGroup)
+    backendStorageAccount: $(backendStorageAccount)
+    backendContainer: $(backendContainer)
+    backendKey: $(backendKey)

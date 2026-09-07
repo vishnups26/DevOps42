@@ -1,0 +1,7 @@
+# Copy this file to tfdemo.env01.tfvars (gitignored) and adjust as needed.
+# This file is referenced by deploy/tfdemo-env01-terraform.yml via the
+# `tfvarsFile` pipeline variable.
+
+project     = "tfdemo"
+environment = "env01"
+location    = "uksouth"

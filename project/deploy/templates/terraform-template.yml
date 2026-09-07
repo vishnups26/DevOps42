@@ -1,0 +1,164 @@
+parameters:
+- name: rootFolder
+  type: string
+- name: tfvarsFile
+  type: string
+- name: adoEnvironment
+  type: string
+- name: terraformVersion
+  type: string
+  default: '1.7.5'
+- name: backendResourceGroup
+  type: string
+  default: 'tfstate-tfdemo-rg'
+- name: backendStorageAccount
+  type: string
+  default: 'tfstatetfdemostg'
+- name: backendContainer
+  type: string
+  default: 'tfstate'
+- name: backendKey
+  type: string
+- name: vmImage
+  type: string
+  default: 'ubuntu-22.04'
+
+stages:
+
+# ---------------------------------------------------------------------------
+# Stage 1 - Validate: fast-fail on formatting/syntax problems before we ever
+# touch the backend or a real Azure subscription.
+# ---------------------------------------------------------------------------
+- stage: 'Terraform_Validate'
+  displayName: 'Terraform Validate'
+  jobs:
+  - job: 'Terraform_Validate'
+    pool:
+      vmImage: ${{ parameters.vmImage }}
+    steps:
+    - checkout: self
+
+    - script: |
+        set -e
+        echo "Installing Terraform ${{ parameters.terraformVersion }}..."
+        curl -sSL -o terraform.zip \
+          https://releases.hashicorp.com/terraform/${{ parameters.terraformVersion }}/terraform_${{ parameters.terraformVersion }}_linux_amd64.zip
+        sudo unzip -o terraform.zip -d /usr/local/bin
+        terraform version
+      displayName: 'Install pinned Terraform version'
+
+    - script: |
+        set -e
+        echo "Checking formatting..."
+        terraform fmt -check -recursive
+      displayName: 'Terraform fmt -check'
+      workingDirectory: ${{ parameters.rootFolder }}
+
+    - script: |
+        set -e
+        echo "Running Terraform init (no backend, syntax check only)..."
+        terraform init -backend=false -input=false
+        echo "Running Terraform validate..."
+        terraform validate
+      displayName: 'Terraform init & validate'
+      workingDirectory: ${{ parameters.rootFolder }}
+
+# ---------------------------------------------------------------------------
+# Stage 2 - Plan: initializes against the real backend, produces a saved
+# plan file, and publishes it as a pipeline artifact so Apply applies the
+# EXACT plan that was reviewed - not a freshly recomputed one.
+# ---------------------------------------------------------------------------
+- stage: 'Terraform_Plan'
+  displayName: 'Terraform Plan'
+  dependsOn: 'Terraform_Validate'
+  jobs:
+  - job: 'Terraform_Plan'
+    pool:
+      vmImage: ${{ parameters.vmImage }}
+    steps:
+    - checkout: self   # <-- fixes the original bug: without this, init/plan
+                        #     have no source code to work against.
+
+    - script: |
+        set -e
+        curl -sSL -o terraform.zip \
+          https://releases.hashicorp.com/terraform/${{ parameters.terraformVersion }}/terraform_${{ parameters.terraformVersion }}_linux_amd64.zip
+        sudo unzip -o terraform.zip -d /usr/local/bin
+        terraform version
+      displayName: 'Install pinned Terraform version'
+
+    - script: |
+        set -e
+        echo "Running Terraform init..."
+        terraform init \
+          -input=false \
+          -backend-config="resource_group_name=${{ parameters.backendResourceGroup }}" \
+          -backend-config="storage_account_name=${{ parameters.backendStorageAccount }}" \
+          -backend-config="container_name=${{ parameters.backendContainer }}" \
+          -backend-config="key=${{ parameters.backendKey }}"
+
+        echo "Running Terraform plan..."
+        terraform plan \
+          -input=false \
+          -no-color \
+          -var-file "${{ parameters.tfvarsFile }}" \
+          -out tfplan
+      displayName: 'Terraform init & plan'
+      workingDirectory: ${{ parameters.rootFolder }}
+      env:
+        ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET) # sensitive value, must be set explicitly
+
+    - publish: '${{ parameters.rootFolder }}tfplan'
+      artifact: 'tfplan-${{ parameters.adoEnvironment }}'
+      displayName: 'Publish plan artifact'
+
+# ---------------------------------------------------------------------------
+# Stage 3 - Apply: gated by an ADO Environment approval check. Downloads the
+# exact plan artifact from Stage 2 and applies it (no re-planning, no drift).
+# ---------------------------------------------------------------------------
+- stage: 'Terraform_Apply'
+  displayName: 'Terraform Apply'
+  dependsOn: 'Terraform_Plan'
+  condition: succeeded()
+  jobs:
+  - deployment: 'Terraform_Apply'
+    pool:
+      vmImage: ${{ parameters.vmImage }}
+    environment: ${{ parameters.adoEnvironment }} # manual approval gate lives here
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+
+          - script: |
+              set -e
+              curl -sSL -o terraform.zip \
+                https://releases.hashicorp.com/terraform/${{ parameters.terraformVersion }}/terraform_${{ parameters.terraformVersion }}_linux_amd64.zip
+              sudo unzip -o terraform.zip -d /usr/local/bin
+              terraform version
+            displayName: 'Install pinned Terraform version'
+
+          - download: current
+            artifact: 'tfplan-${{ parameters.adoEnvironment }}'
+            displayName: 'Download reviewed plan artifact'
+
+          - script: |
+              set -e
+              echo "Running Terraform init..."
+              terraform init \
+                -input=false \
+                -backend-config="resource_group_name=${{ parameters.backendResourceGroup }}" \
+                -backend-config="storage_account_name=${{ parameters.backendStorageAccount }}" \
+                -backend-config="container_name=${{ parameters.backendContainer }}" \
+                -backend-config="key=${{ parameters.backendKey }}"
+
+              echo "Applying the reviewed plan (no re-plan, no drift)..."
+              terraform apply \
+                -input=false \
+                -no-color \
+                "$(Pipeline.Workspace)/tfplan-${{ parameters.adoEnvironment }}/tfplan"
+            displayName: 'Terraform init & apply saved plan'
+            workingDirectory: ${{ parameters.rootFolder }}
+            env:
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
